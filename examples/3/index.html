@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Form with Two-Way Binding</title>
+  <!-- <script src="reactive-html.js"></script> -->
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; }
+    .form-group { margin: 15px 0; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    input[type="text"], input[type="email"], select, textarea {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    .preview { padding: 15px; background: #f8f9fa; border-radius: 4px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+
+<re-registration-form data-model="form">
+  <h2>Registration Form</h2>
+  
+  <div class="form-group">
+    <label>Full Name:</label>
+    <input type="text" :model="name" placeholder="John Doe">
+  </div>
+  
+  <div class="form-group">
+    <label>Email:</label>
+    <input type="email" :model="email" placeholder="john@example.com">
+  </div>
+  
+  <div class="form-group">
+    <label>Country:</label>
+    <select :model="country">
+      <option value="">Select a country...</option>
+      <option value="us">United States</option>
+      <option value="uk">United Kingdom</option>
+      <option value="ca">Canada</option>
+      <option value="de">Germany</option>
+    </select>
+  </div>
+  
+  <div class="form-group">
+    <label>Interests:</label>
+    <label><input type="checkbox" :model="interests" value="tech"> Technology</label>
+    <label><input type="checkbox" :model="interests" value="sports"> Sports</label>
+    <label><input type="checkbox" :model="interests" value="music"> Music</label>
+    <label><input type="checkbox" :model="interests" value="travel"> Travel</label>
+  </div>
+  
+  <div class="form-group">
+    <label>Subscription:</label>
+    <label><input type="radio" :model="subscription" value="free"> Free</label>
+    <label><input type="radio" :model="subscription" value="basic"> Basic ($9/mo)</label>
+    <label><input type="radio" :model="subscription" value="premium"> Premium ($19/mo)</label>
+  </div>
+  
+  <div class="form-group">
+    <label>Bio:</label>
+    <textarea :model="bio" rows="4" placeholder="Tell us about yourself..."></textarea>
+  </div>
+  
+  <div class="form-group">
+    <label>
+      <input type="checkbox" :model="agreedToTerms">
+      I agree to the terms and conditions
+    </label>
+  </div>
+  
+  <button @click="submit()" :disabled="!isValid">Submit Registration</button>
+  
+  <!-- Live Preview -->
+  <div class="preview" :if="name || email">
+    <h3>Live Preview:</h3>
+    <p><strong>Name:</strong> <span :text="name || 'Not provided'"></span></p>
+    <p><strong>Email:</strong> <span :text="email || 'Not provided'"></span></p>
+    <p><strong>Country:</strong> <span :text="country || 'Not selected'"></span></p>
+    <p><strong>Interests:</strong> <span :text="interests.join(', ') || 'None'"></span></p>
+    <p><strong>Subscription:</strong> <span :text="subscription"></span></p>
+    <p><strong>Bio:</strong> <span :text="bio || 'Not provided'"></span></p>
+    <p><strong>Terms Agreed:</strong> <span :text="agreedToTerms ? 'Yes' : 'No'"></span></p>
+  </div>
+</re-registration-form>
+
+<div style="margin-top: 30px; padding: 20px; background: #f0f0f0; border-radius: 4px; font-family: monospace;">
+  <h3>🔍 Debug: Model Values (Updates in Real-Time)</h3>
+  
+  <re-debug-panel data-model="form">
+    <div><strong>name:</strong> "<span :text="name"></span>"</div>
+    <div><strong>email:</strong> "<span :text="email"></span>"</div>
+    <div><strong>country:</strong> "<span :text="country"></span>"</div>
+    <div><strong>interests:</strong> [<span :text="interests.join(', ')"></span>]</div>
+    <div><strong>subscription:</strong> "<span :text="subscription"></span>"</div>
+    <div><strong>bio:</strong> "<span :text="bio"></span>"</div>
+    <div><strong>agreedToTerms:</strong> <span :text="agreedToTerms"></span></div>
+    <div style="margin-top: 10px;"><strong>isValid:</strong> <span :text="isValid"></span></div>
+  </re-debug-panel>
+</div>
+
+</body>
+</html>

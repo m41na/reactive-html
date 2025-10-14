@@ -2,85 +2,59 @@ import {
   reactive,
   ReactiveHTMLParser,
   createBindings,
+  bindingRegistry,
 } from './re-html';
 
+// Create reactive model
 const model = reactive({
-  form: {
-    name: '',
-    email: '',
-    country: '',
-    interests: [],
-    subscription: 'free',
-    bio: '',
-    agreedToTerms: false,
-
-    get isValid() {
-      return this.name.length > 0
-        && this.email.includes('@')
-        && this.agreedToTerms;
-    },
-
-    // NEW TEST METHODS
-    fillDemoData() {
-      console.log('📝 Filling demo data...');
-      this.name = 'Jane Doe';
-      this.email = 'jane@example.com';
-      this.country = 'uk';
-      this.interests = ['tech', 'travel'];
-      this.subscription = 'premium';
-      this.bio = 'I love building reactive frameworks!';
-      this.agreedToTerms = true;
-    },
-
-    clearForm() {
-      console.log('🗑️ Clearing form...');
-      this.name = '';
-      this.email = '';
-      this.country = '';
-      this.interests = [];
-      this.subscription = 'free';
-      this.bio = '';
-      this.agreedToTerms = false;
-    },
-
-    toggleTerms() {
-      console.log('🔄 Toggling terms...');
-      this.agreedToTerms = !this.agreedToTerms;
-    },
-
-    addInterest(interest) {
-      console.log('➕ Adding interest:', interest);
-      if (!this.interests.includes(interest)) {
-        this.interests.push(interest);
+  cart: {
+    items: [],
+    
+    removeItem(id) {
+      const index = this.items.findIndex(item => item.id === id);
+      if (index !== -1) {
+        this.items.splice(index, 1);
       }
     },
-
-    submit() {
-      if (!this.isValid) {
-        alert('Please fill out all required fields');
-        return;
-      }
-
-      console.log('✅ Form submitted:', {
-        name: this.name,
-        email: this.email,
-        country: this.country,
-        interests: this.interests,
-        subscription: this.subscription,
-        bio: this.bio
-      });
-
-      alert('Registration successful!');
+    
+    addRandomItem() {
+      const names = ['Coffee', 'Bagel', 'Tea', 'Muffin', 'Juice'];
+      const name = names[Math.floor(Math.random() * names.length)];
+      const price = parseFloat((Math.random() * 5 + 2).toFixed(2));
+      const id = Date.now();
+      
+      this.items.push({ id, name, price });
+    },
+    
+    addExpensiveItem() {
+      const names = ['Steak', 'Lobster', 'Champagne', 'Caviar'];
+      const name = names[Math.floor(Math.random() * names.length)];
+      const price = parseFloat((Math.random() * 5 + 8).toFixed(2));
+      const id = Date.now();
+      
+      this.items.push({ id, name, price });
+    },
+    
+    clearCart() {
+      this.items = [];
     }
   }
 });
 
+// Initialize parser
 const parser = new ReactiveHTMLParser();
-const root = document.querySelector('re-registration-form');
+const root = document.querySelector('re-shopping-cart');
+// Parse and create bindings
 const parsed = parser.parse(root);
 createBindings(parsed, model);
 
-// Parse the debug panel too
-const debugRoot = document.querySelector('re-debug-panel');
-const debugParsed = parser.parse(debugRoot);
-createBindings(debugParsed, model);
+console.log('✅ Shopping cart with conditionals is now reactive!');
+console.log('Active bindings:', bindingRegistry.count);
+
+// Update debug info every second
+setInterval(() => {
+  const debugSpans = document.querySelectorAll('[data-model] div:last-child span');
+  if (debugSpans[0]) {
+    debugSpans[0].textContent = bindingRegistry.count;
+  }
+}, 1000);

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Error Boundary Demo</title>
+  <!-- <script src="reactive-html.js"></script> -->
+</head>
+<body>
+
+<div data-model="app">
+  <h1>Error Boundary Demo</h1>
+  
+  <button @click="goodOperation()">✅ This Works</button>
+  <button @click="badOperation()">💥 This Throws Error</button>
+  <button @click="addBadItem()">➕ Add Item That Will Error</button>
+  
+  <div>
+    <h3>Items (with error handling):</h3>
+    <div :each="item in items" :key="item.id">
+      <!-- Even if item.name.toUpperCase() fails, loop continues -->
+      <div>
+        <span :text="item.id"></span>: 
+        <span :text="item.name ? item.name.toUpperCase() : 'NO NAME'"></span>
+      </div>
+    </div>
+  </div>
+  
+  <div id="error-log" style="margin-top: 20px; padding: 10px; background: #f0f0f0;"></div>
+</div>
+
+</body>
+</html>
