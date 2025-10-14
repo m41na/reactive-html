@@ -270,11 +270,15 @@ class Effect {
     this.cleanup();
     this.dependencies.clear();
 
-    try {
+    // Wrap in error boundary
+    const safeRun = GlobalErrorHandler.wrap(() => {
       EffectTracker.track(this, this.fn);
-    } catch (error) {
-      console.error('Error in effect:', error);
-    }
+    }, {
+      type: 'effect',
+      effect: this
+    });
+    
+    safeRun();
   }
 
   cleanup() {
@@ -864,14 +868,17 @@ class Binding {
     this.effect = EffectTracker.create(() => {
       if (!this.active) return;
 
-      try {
+      const safeUpdate = GlobalErrorHandler.wrap(() => {
         const value = this._evaluate();
         this.updater(this.element, value, this.binding);
-      } catch (error) {
-        console.error(`Error in binding "${this.binding.name}":`, error);
-        console.error(`Expression: ${this.binding.expression}`);
-        console.error(`Element:`, this.element);
-      }
+      }, {
+        type: 'binding',
+        bindingName: this.binding.name,
+        element: this.element,
+        expression: this.binding.expression
+      });
+
+      safeUpdate();
     });
   }
 
@@ -898,6 +905,8 @@ class EventBinding {
     this.binding = attributeBinding;
     this.contextStack = contextStack;
     this.handler = null;
+    this.active = true;
+    
     this._attach();
   }
 
@@ -905,28 +914,25 @@ class EventBinding {
     const eventName = this.binding.name;
 
     this.handler = (event) => {
-      try {
-        const eventContext = {
-          $event: event,
-          $element: this.element,
-          $target: event.target
-        };
-
-        const context = [...this.contextStack, eventContext];
-
-        // DEBUG: Log what we're evaluating
-        console.log('Event fired:', eventName);
-        console.log('Expression:', this.binding.expression);
-        console.log('Context stack depth:', context.length);
-        console.log('Context[0] keys:', Object.keys(context[0] || {}));
-
+      const eventContext = {
+        $event: event,
+        $element: this.element,
+        $target: event.target
+      };
+      
+      const context = [...this.contextStack, eventContext];
+      
+      // Wrap in error boundary
+      const safeHandler = GlobalErrorHandler.wrap(() => {
         ExpressionEvaluator.evaluate(this.binding.expression, context);
-
-      } catch (error) {
-        console.error(`Error in event handler "${eventName}":`, error);
-        console.error(`Expression: ${this.binding.expression}`);
-        console.error(`Context:`, this.contextStack);
-      }
+      }, {
+        type: 'event',
+        eventName,
+        element: this.element,
+        expression: this.binding.expression
+      });
+      
+      safeHandler();
     };
 
     this.element.addEventListener(eventName, this.handler);
@@ -2178,24 +2184,234 @@ function createBindings(parsedElement, model, contextStack = []) {
 }
 
 // ============================================================================
-// PART 11: EXPORTS & INITIALIZATION
+// PART 11: ERROR BOUNDARIES
+// ============================================================================
+
+/**
+ * ErrorBoundary - Catches and handles errors in reactive code
+ * 
+ * Features:
+ * - Prevents errors from bubbling up and breaking the app
+ * - Provides helpful error context (element, binding, expression)
+ * - Allows custom error handlers
+ * - Logs errors with stack traces
+ * - Supports graceful degradation
+ */
+class ErrorBoundary {
+  constructor(options = {}) {
+    this.onError = options.onError || this._defaultErrorHandler;
+    this.fallback = options.fallback || null;
+    this.logErrors = options.logErrors !== false; // Default true
+  }
+  
+  /**
+   * Wrap a function in error handling
+   */
+  wrap(fn, context = {}) {
+    return (...args) => {
+      try {
+        return fn(...args);
+      } catch (error) {
+        this._handleError(error, context);
+        return this.fallback;
+      }
+    };
+  }
+  
+  /**
+   * Wrap an async function in error handling
+   */
+  wrapAsync(fn, context = {}) {
+    return async (...args) => {
+      try {
+        return await fn(...args);
+      } catch (error) {
+        this._handleError(error, context);
+        return this.fallback;
+      }
+    };
+  }
+  
+  /**
+   * Handle an error
+   */
+  _handleError(error, context) {
+    const errorInfo = {
+      error,
+      context,
+      timestamp: new Date().toISOString(),
+      userAgent: navigator.userAgent
+    };
+    
+    if (this.logErrors) {
+      this._logError(errorInfo);
+    }
+    
+    // Call custom error handler
+    try {
+      this.onError(errorInfo);
+    } catch (handlerError) {
+      console.error('Error in error handler:', handlerError);
+    }
+  }
+  
+  /**
+   * Log error with helpful context
+   */
+  _logError(errorInfo) {
+    console.group('🚨 ReactiveHTML Error');
+    console.error('Error:', errorInfo.error.message);
+    console.error('Stack:', errorInfo.error.stack);
+    
+    if (errorInfo.context.element) {
+      console.log('Element:', errorInfo.context.element);
+    }
+    
+    if (errorInfo.context.binding) {
+      console.log('Binding:', errorInfo.context.binding);
+    }
+    
+    if (errorInfo.context.expression) {
+      console.log('Expression:', errorInfo.context.expression);
+    }
+    
+    if (errorInfo.context.type) {
+      console.log('Error Type:', errorInfo.context.type);
+    }
+    
+    console.log('Timestamp:', errorInfo.timestamp);
+    console.groupEnd();
+  }
+  
+  /**
+   * Default error handler (does nothing)
+   */
+  _defaultErrorHandler(errorInfo) {
+    // Override this with custom handler
+  }
+}
+
+/**
+ * GlobalErrorHandler - Singleton for framework-wide error handling
+ */
+class GlobalErrorHandler {
+  static instance = null;
+  
+  static initialize(options = {}) {
+    if (!GlobalErrorHandler.instance) {
+      GlobalErrorHandler.instance = new ErrorBoundary(options);
+    }
+    return GlobalErrorHandler.instance;
+  }
+  
+  static get() {
+    if (!GlobalErrorHandler.instance) {
+      GlobalErrorHandler.instance = new ErrorBoundary();
+    }
+    return GlobalErrorHandler.instance;
+  }
+  
+  static setErrorHandler(handler) {
+    GlobalErrorHandler.get().onError = handler;
+  }
+  
+  static wrap(fn, context) {
+    return GlobalErrorHandler.get().wrap(fn, context);
+  }
+  
+  static wrapAsync(fn, context) {
+    return GlobalErrorHandler.get().wrapAsync(fn, context);
+  }
+}
+
+// Initialize with default options
+const errorBoundary = GlobalErrorHandler.initialize();
+
+/**
+ * Create an error boundary for a specific element
+ */
+function createElementErrorBoundary(element, options = {}) {
+  const boundary = new ErrorBoundary({
+    onError: (errorInfo) => {
+      // Show error UI
+      const errorDiv = document.createElement('div');
+      errorDiv.style.cssText = 'padding: 10px; background: #fee; border: 1px solid #fcc; color: #c00;';
+      errorDiv.textContent = options.message || 'Something went wrong';
+      
+      element.innerHTML = '';
+      element.appendChild(errorDiv);
+      
+      // Call custom handler if provided
+      if (options.onError) {
+        options.onError(errorInfo);
+      }
+    },
+    fallback: options.fallback,
+    logErrors: options.logErrors
+  });
+  
+  return boundary;
+}
+
+/**
+ * Initialize error handling based on environment
+ */
+function initializeErrorHandling(isDevelopment = false) {
+  if (isDevelopment) {
+    // Development: Verbose logging
+    GlobalErrorHandler.initialize({
+      logErrors: true,
+      onError: (errorInfo) => {
+        // Show detailed error overlay
+        showDevelopmentErrorOverlay(errorInfo);
+      }
+    });
+  } else {
+    // Production: Silent logging, user-friendly messages
+    GlobalErrorHandler.initialize({
+      logErrors: false,
+      onError: (errorInfo) => {
+        // Send to monitoring service
+        sendToErrorTracking(errorInfo);
+        
+        // Show generic message to user
+        showUserFriendlyError();
+      }
+    });
+  }
+}
+
+// Initialize
+initializeErrorHandling(process.env.NODE_ENV === 'development');
+
+// ============================================================================
+// PART 12: EXPORTS & INITIALIZATION
 // ============================================================================
 
 export {
   Signal,
-  Effect,
-  EffectTracker,
-  reactive,
-  ReactiveHTMLParser,
-  createBindings,
-  batch,
-  nextTick,
-  computed,
-  asyncComputed,
-  ComputedSignal,
-  batchScheduler,
-  ExpressionEvaluator,
-  ReactiveModel,
-  bindingRegistry,
+    Effect,
+    EffectTracker,
+    reactive,
+    ReactiveHTMLParser,
+    createBindings,
+    BindingRegistry,
+    bindingRegistry,
+    ExpressionEvaluator,
+    ReactiveModel,
+    computed,
+    batch,
+    nextTick,
+    batchScheduler,
+    ModelBinding,
+    ConditionalBinding,
+    ConditionalBindingFactory,
+    
+    // Add error handling
+    ErrorBoundary,
+    GlobalErrorHandler,
+    createElementErrorBoundary
 }
+
+console.log('Reactive HTML Framework loaded!');
 
