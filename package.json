@@ -1,6 +1,6 @@
 {
  "name": "@m41na/reactive-html",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Zero-dependency reactive framework that brings Vue-like reactivity directly to HTML",
   "main": "dist/reactive-html.js",
   "module": "dist/reactive-html.esm.js",
