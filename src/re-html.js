@@ -1,0 +1,2201 @@
+// ============================================================================
+// REACTIVE-HTML.JS - Complete Framework
+// ============================================================================
+
+'use strict';
+
+// ============================================================================
+// PART 1: DATA STRUCTURES (Parser Output)
+// ============================================================================
+
+class ParsedElement {
+  constructor(element) {
+    this.element = element;
+    this.type = null;                    // 'component' | 'loop' | 'conditional' | 'reactive' | 'static'
+    this.bindings = [];
+    this.children = [];
+    this.context = null;
+    this.isRegistrationPoint = false;
+    this.isResumePoint = false;
+    this.loopConfig = null;
+    this.conditionalConfig = null;
+  }
+}
+
+class AttributeBinding {
+  constructor(name, expression, type) {
+    this.name = name;
+    this.expression = expression;
+    this.type = type;                    // 'property' | 'event' | 'attribute'
+    this.dependencies = [];
+  }
+}
+
+class LoopConfig {
+  constructor(element, eachAttr) {
+    const parsed = this._parseEachExpression(eachAttr);
+
+    this.itemVar = parsed.itemVar;
+    this.indexVar = parsed.indexVar;
+    this.source = parsed.source;
+    this.keyExpression = this._extractKey(element);
+
+    this.template = element.cloneNode(true);
+    this.template.removeAttribute(':each');
+    this.template.removeAttribute(':key');
+
+    this.anchor = document.createComment(`each: ${this.itemVar} in ${this.source}`);
+    element.replaceWith(this.anchor);
+
+    this.instances = [];
+  }
+
+  _parseEachExpression(expr) {
+    const patterns = [
+      /^\((\w+)\s*,\s*(\w+)\)\s+in\s+([\w.]+)$/,
+      /^(\w+)\s*,\s*(\w+)\s+in\s+([\w.]+)$/,
+      /^(\w+)\s+in\s+([\w.]+)$/
+    ];
+
+    for (const pattern of patterns) {
+      const match = expr.match(pattern);
+      if (match) {
+        return {
+          itemVar: match[1],
+          indexVar: match[2] || null,
+          source: match[match.length - 1]
+        };
+      }
+    }
+
+    throw new Error(`Invalid :each syntax: "${expr}"`);
+  }
+
+  _extractKey(element) {
+    const keyAttr = element.getAttribute(':key');
+    return keyAttr || '$index';
+  }
+}
+
+class ConditionalConfig {
+  constructor(element) {
+    this.branches = this._parseBranches(element);
+    this.anchor = document.createComment('if');
+    this.activeBranch = null;
+    this.activeElement = null;
+    element.replaceWith(this.anchor);
+  }
+
+  _parseBranches(element) {
+    const branches = [];
+
+    if (element.hasAttribute(':if')) {
+      const template = element.cloneNode(true);
+      template.removeAttribute(':if');
+
+      branches.push({
+        type: 'if',
+        expression: element.getAttribute(':if'),
+        template: template,  // Original template - never modified!
+        element: null,       // Current working element
+        parsed: null,
+        bindings: null
+      });
+    }
+
+    let sibling = element.nextElementSibling;
+    while (sibling) {
+      if (sibling.hasAttribute(':else-if')) {
+        const template = sibling.cloneNode(true);
+        template.removeAttribute(':else-if');
+
+        branches.push({
+          type: 'else-if',
+          expression: sibling.getAttribute(':else-if'),
+          template: template,
+          element: null,
+          parsed: null,
+          bindings: null
+        });
+
+        const next = sibling.nextElementSibling;
+        sibling.remove();
+        sibling = next;
+
+      } else if (sibling.hasAttribute(':else')) {
+        const template = sibling.cloneNode(true);
+        template.removeAttribute(':else');
+
+        branches.push({
+          type: 'else',
+          expression: 'true',
+          template: template,
+          element: null,
+          parsed: null,
+          bindings: null
+        });
+
+        sibling.remove();
+        break;
+
+      } else {
+        break;
+      }
+    }
+
+    return branches;
+  }
+}
+
+// ============================================================================
+// PART 2: CORE REACTIVITY (Signals & Effects)
+// ============================================================================
+
+class Signal {
+  static _nextId = 0;
+
+  constructor(initialValue) {
+    this._value = initialValue;
+    this._subscribers = new Set();
+    this._id = Signal._nextId++;
+  }
+
+  get value() {
+    if (EffectTracker.current) {
+      EffectTracker.current.track(this);
+    }
+    return this._value;
+  }
+
+  set value(newValue) {
+    if (this._value === newValue) {
+      return;
+    }
+
+    const oldValue = this._value;
+    this._value = newValue;
+
+    // DEBUG: Log when items property signal fires
+    console.log('Signal fired! Subscribers:', this._subscribers.size);
+
+    this._notify(newValue, oldValue);
+  }
+
+  get subscriberCount() {
+    return this._subscribers.size;
+  }
+
+  subscribe(callback) {
+    this._subscribers.add(callback);
+    return () => {
+      this._subscribers.delete(callback);
+    };
+  }
+
+  _notify(newValue, oldValue) {
+    const subscribers = Array.from(this._subscribers);
+    subscribers.forEach(callback => {
+      try {
+        callback(newValue, oldValue);
+      } catch (error) {
+        console.error('Error in signal subscriber:', error);
+      }
+    });
+  }
+
+  dispose() {
+    this._subscribers.clear();
+  }
+
+  toString() {
+    return `Signal(${this._value})`;
+  }
+}
+
+class EffectTracker {
+  static current = null;
+  static stack = [];
+
+  static create(fn) {
+    return new Effect(fn);
+  }
+
+  static track(effect, fn) {
+    const previousEffect = EffectTracker.current;
+    EffectTracker.stack.push(previousEffect);
+    EffectTracker.current = effect;
+
+    try {
+      return fn();
+    } finally {
+      EffectTracker.current = previousEffect;
+      EffectTracker.stack.pop();
+    }
+  }
+}
+
+class Effect {
+  constructor(fn) {
+    this.fn = fn;
+    this.dependencies = new Set();
+    this.cleanups = [];
+    this.active = true;
+    this.scheduled = false;  // NEW: Track if already scheduled
+
+    this.run();
+  }
+
+  track(signal) {
+    if (!this.dependencies.has(signal)) {
+      this.dependencies.add(signal);
+
+      const unsubscribe = signal.subscribe(() => {
+        if (this.active && !this.scheduled) {
+          // Instead of running immediately, schedule via batch scheduler
+          this.scheduled = true;
+          batchScheduler.schedule(this);
+        }
+      });
+
+      this.cleanups.push(unsubscribe);
+    }
+  }
+
+  run() {
+    if (!this.active) return;
+
+    // Clear scheduled flag
+    this.scheduled = false;
+
+    this.cleanup();
+    this.dependencies.clear();
+
+    try {
+      EffectTracker.track(this, this.fn);
+    } catch (error) {
+      console.error('Error in effect:', error);
+    }
+  }
+
+  cleanup() {
+    this.cleanups.forEach(fn => fn());
+    this.cleanups = [];
+  }
+
+  stop() {
+    this.active = false;
+    this.cleanup();
+    this.dependencies.clear();
+  }
+}
+
+// ============================================================================
+// PART 3: REACTIVE MODELS (Proxies)
+// ============================================================================
+
+class ReactiveModel {
+  static _reactiveMap = new WeakMap();
+  static _rawMap = new WeakMap();
+  static _signalsMap = new WeakMap();
+
+  static _getSignals(target) {
+    let signals = this._signalsMap.get(target);
+    if (!signals) {
+      signals = new Map();
+      this._signalsMap.set(target, signals);
+    }
+    return signals;
+  }
+
+  static isReactive(obj) {
+    return obj && obj.__isReactive === true;
+  }
+
+  static toRaw(obj) {
+    return this._rawMap.get(obj) || obj;
+  }
+}
+
+function reactiveArray(arr) {
+  const signals = ReactiveModel._getSignals(arr);
+
+  // Create change signal
+  let changeSignal = signals.get('__arrayChange');
+  if (!changeSignal) {
+    changeSignal = new Signal(null);
+    signals.set('__arrayChange', changeSignal);
+  }
+
+  // Create length signal
+  let lengthSignal = signals.get('length');
+  if (!lengthSignal) {
+    lengthSignal = new Signal(arr.length);
+    signals.set('length', lengthSignal);
+  }
+
+  // ADD: Create version signal that always increments
+  let versionSignal = signals.get('__version');
+  if (!versionSignal) {
+    versionSignal = new Signal(0);
+    signals.set('__version', versionSignal);
+  }
+
+  const proxy = new Proxy(arr, {
+    get(target, property, receiver) {
+      const mutationMethods = {
+        push: 'add',
+        pop: 'remove',
+        shift: 'remove',
+        unshift: 'add',
+        splice: 'splice',
+        sort: 'reorder',
+        reverse: 'reorder'
+      };
+
+      if (mutationMethods[property]) {
+        return function (...args) {
+          const oldLength = target.length;
+          const result = Array.prototype[property].apply(target, args);
+
+          // Update length signal
+          lengthSignal.value = target.length;
+
+          // ALWAYS increment version (even if length unchanged)
+          versionSignal.value = versionSignal.value + 1;
+
+          // Emit change event
+          changeSignal.value = {
+            type: mutationMethods[property],
+            method: property,
+            args,
+            oldLength,
+            newLength: target.length,
+            timestamp: Date.now()
+          };
+
+          return result;
+        };
+      }
+
+      // Track access to length
+      if (property === 'length') {
+        lengthSignal.value;
+      }
+
+      // ADDED: Track access to __version (for forcing re-renders)
+      if (property === '__version') {
+        return versionSignal.value;
+      }
+
+      const value = Reflect.get(target, property, receiver);
+
+      if (typeof value === 'object' && value !== null) {
+        return reactive(value);
+      }
+
+      return value;
+    },
+
+    set(target, property, value, receiver) {
+      const oldValue = target[property];
+      const result = Reflect.set(target, property, value, receiver);
+
+      if (property === 'length' || !isNaN(property)) {
+        lengthSignal.value = target.length;
+        versionSignal.value = versionSignal.value + 1; // ADDED
+
+        if (!isNaN(property) && oldValue !== value) {
+          changeSignal.value = {
+            type: 'update',
+            method: 'set',
+            index: parseInt(property),
+            oldValue,
+            newValue: value,
+            timestamp: Date.now()
+          };
+        }
+      }
+
+      return result;
+    }
+  });
+
+  ReactiveModel._reactiveMap.set(arr, proxy);
+  ReactiveModel._rawMap.set(proxy, arr);
+
+  return proxy;
+}
+
+function reactive(target) {
+  if (Array.isArray(target)) {
+    return reactiveArray(target);
+  }
+
+  if (ReactiveModel._reactiveMap.has(target)) {
+    return ReactiveModel._reactiveMap.get(target);
+  }
+
+  if (typeof target !== 'object' || target === null) {
+    return target;
+  }
+
+  const signals = ReactiveModel._getSignals(target);
+
+  const proxy = new Proxy(target, {
+    get(target, property, receiver) {
+      if (property === '__isReactive') return true;
+      if (property === '__raw') return target;
+      if (property === '__signals') return signals;
+
+      // Check if this is a getter (computed property)
+      const descriptor = Object.getOwnPropertyDescriptor(target, property);
+      if (descriptor && descriptor.get) {
+        // This is a getter - make it computed!
+        let computedSignal = signals.get(property);
+        if (!computedSignal) {
+          computedSignal = new ComputedSignal(descriptor.get, receiver);
+          signals.set(property, computedSignal);
+        }
+        return computedSignal.value;
+      }
+
+      const value = Reflect.get(target, property, receiver);
+
+      // Create or get signal for property tracking
+      let signal = signals.get(property);
+      if (!signal) {
+        signal = new Signal(value);
+        signals.set(property, signal);
+      }
+
+      signal.value; // Trigger tracking
+
+      if (typeof value === 'object' && value !== null) {
+        return reactive(value);
+      }
+
+      return value;
+    },
+
+    set(target, property, value, receiver) {
+      const oldValue = target[property];
+      const result = Reflect.set(target, property, value, receiver);
+
+      if (oldValue !== value) {
+        let signal = signals.get(property);
+        if (!signal) {
+          signal = new Signal(value);
+          signals.set(property, signal);
+        } else {
+          signal.value = value;
+        }
+      }
+
+      return result;
+    },
+
+    deleteProperty(target, property) {
+      const hadProperty = property in target;
+      const result = Reflect.deleteProperty(target, property);
+
+      if (hadProperty) {
+        const signal = signals.get(property);
+        if (signal) {
+          signal.value = undefined;
+        }
+      }
+
+      return result;
+    }
+  });
+
+  ReactiveModel._reactiveMap.set(target, proxy);
+  ReactiveModel._rawMap.set(proxy, target);
+
+  return proxy;
+}
+
+// ============================================================================
+// PART 4: HTML PARSER
+// ============================================================================
+
+class ReactiveHTMLParser {
+  constructor() {
+    this.parsed = new Map();
+    this.customElements = new Set();
+  }
+
+  parse(rootElement, contextStack = []) {
+    return this._parseElement(rootElement, contextStack);
+  }
+
+  getCustomElements() {
+    return this.customElements;
+  }
+
+  _parseElement(element, contextStack) {
+    if (element.nodeType !== Node.ELEMENT_NODE) {
+      return null;
+    }
+
+    const parsed = new ParsedElement(element);
+
+    if (element.hasAttribute(':each')) {
+      parsed.type = 'loop';
+      parsed.loopConfig = new LoopConfig(element, element.getAttribute(':each'));
+      parsed.context = [...contextStack];
+      parsed.isResumePoint = true;
+      this.parsed.set(element, parsed);
+      return parsed;
+    }
+
+    if (element.hasAttribute(':if')) {
+      parsed.type = 'conditional';
+      parsed.conditionalConfig = new ConditionalConfig(element);
+      parsed.context = [...contextStack];
+      parsed.isResumePoint = true;
+      this.parsed.set(element, parsed);
+      return parsed;
+    }
+
+    if (element.hasAttribute(':else-if') || element.hasAttribute(':else')) {
+      return null;
+    }
+
+    parsed.type = this._classifyElement(element);
+    parsed.context = [...contextStack];
+
+    if (this._isCustomElement(element)) {
+      parsed.isRegistrationPoint = true;
+      this.customElements.add(element.tagName.toLowerCase());
+    }
+
+    if (parsed.type !== 'static') {
+      parsed.isResumePoint = true;
+    }
+
+    parsed.bindings = this._parseBindings(element);
+
+    Array.from(element.children).forEach(child => {
+      const childParsed = this._parseElement(child, contextStack);
+      if (childParsed) {
+        parsed.children.push(childParsed);
+      }
+    });
+
+    this.parsed.set(element, parsed);
+    return parsed;
+  }
+
+  _classifyElement(element) {
+    if (this._hasAttribute(element, ':each')) return 'loop';
+    if (this._hasAttribute(element, ':if')) return 'conditional';
+    if (this._isCustomElement(element)) return 'component';
+    if (this._hasReactiveAttributes(element)) return 'reactive';
+
+    const hasReactiveChildren = Array.from(element.children).some(child =>
+      this._hasReactiveAttributes(child) ||
+      this._isCustomElement(child) ||
+      child.hasAttribute(':each') ||
+      child.hasAttribute(':if')
+    );
+
+    if (hasReactiveChildren) return 'reactive';
+    return 'static';
+  }
+
+  _isCustomElement(element) {
+    const tagName = element.tagName.toLowerCase();
+    return tagName.startsWith('re-') || tagName.includes('-');
+  }
+
+  _hasReactiveAttributes(element) {
+    return Array.from(element.attributes).some(attr =>
+      attr.name.startsWith(':') ||
+      attr.name.startsWith('@') ||
+      attr.name === 'data-model'
+    );
+  }
+
+  _hasAttribute(element, name) {
+    return element.hasAttribute(name);
+  }
+
+  _parseBindings(element) {
+    const bindings = [];
+
+    Array.from(element.attributes).forEach(attr => {
+      if (attr.name.startsWith(':')) {
+        const propName = attr.name.slice(1);
+
+        const binding = new AttributeBinding(
+          propName,
+          attr.value,
+          'property'
+        );
+        binding.dependencies = this._extractDependencies(attr.value);
+        bindings.push(binding);
+      } else if (attr.name.startsWith('@')) {
+        const eventName = attr.name.slice(1);
+        const binding = new AttributeBinding(eventName, attr.value, 'event');
+        binding.dependencies = this._extractDependencies(attr.value);
+        bindings.push(binding);
+      } else if (attr.name === 'data-model') {
+        const binding = new AttributeBinding('model', attr.value, 'property');
+        bindings.push(binding);
+      }
+    });
+
+    return bindings;
+  }
+
+  _extractDependencies(expression) {
+    const deps = [];
+    const regex = /\b(\w+(?:\.\w+)*)\b/g;
+    let match;
+
+    while ((match = regex.exec(expression)) !== null) {
+      const path = match[1];
+      if (!this._isKeyword(path) && !this._isMethodCall(expression, match.index)) {
+        deps.push(path);
+      }
+    }
+
+    return [...new Set(deps)];
+  }
+
+  _isKeyword(word) {
+    const keywords = [
+      'true', 'false', 'null', 'undefined', 'this',
+      'return', 'if', 'else', 'for', 'while', 'do',
+      'switch', 'case', 'break', 'continue', 'function',
+      'var', 'let', 'const', 'new', 'typeof', 'instanceof'
+    ];
+    return keywords.includes(word);
+  }
+
+  _isMethodCall(expression, index) {
+    const remaining = expression.slice(index);
+    return /^\w+\s*\(/.test(remaining);
+  }
+}
+
+// ============================================================================
+// PART 5: EXPRESSION EVALUATOR
+// ============================================================================
+
+class ExpressionEvaluator {
+  static cache = new Map();
+
+  static evaluate(expression, contextStack) {
+    try {
+      let fn = this.cache.get(expression);
+      if (!fn) {
+        fn = this._compile(expression);
+        this.cache.set(expression, fn);
+      }
+
+      const context = this._mergeContexts(contextStack);
+      return fn(context);
+
+    } catch (error) {
+      console.warn(`Error evaluating expression: "${expression}"`, error);
+      return undefined;
+    }
+  }
+
+  static _compile(expression) {
+    const fnBody = `
+      with (context) {
+        return (${expression});
+      }
+    `;
+
+    try {
+      return new Function('context', fnBody);
+    } catch (error) {
+      console.error(`Failed to compile expression: "${expression}"`, error);
+      return () => undefined;
+    }
+  }
+
+  static _mergeContexts(contextStack) {
+    const handler = {
+      get(target, property) {
+
+        for (let i = contextStack.length - 1; i >= 0; i--) {
+          const context = contextStack[i];
+
+          if (property in context) {
+            const value = context[property];
+
+            if (typeof value === 'function') {
+              return value.bind(context);
+            }
+
+            return value;
+          }
+        }
+
+        return undefined;
+      },
+
+      has(target, property) {
+        return contextStack.some(context => property in context);
+      }
+    };
+
+    return new Proxy({}, handler);
+  }
+
+  static clearCache() {
+    this.cache.clear();
+  }
+}
+
+// ============================================================================
+// PART 6: BINDING UPDATERS
+// ============================================================================
+
+class BindingUpdaters {
+  static updaters = new Map();
+
+  static register(name, updater) {
+    this.updaters.set(name, updater);
+  }
+
+  static get(name) {
+    return this.updaters.get(name);
+  }
+
+  static registerBuiltins() {
+    this.register('text', (element, value) => {
+      element.textContent = value ?? '';
+    });
+
+    this.register('html', (element, value) => {
+      element.innerHTML = value ?? '';
+    });
+
+    this.register('value', (element, value) => {
+      if (element.value !== value) {
+        element.value = value ?? '';
+      }
+    });
+
+    this.register('checked', (element, value) => {
+      element.checked = !!value;
+    });
+
+    this.register('disabled', (element, value) => {
+      element.disabled = !!value;
+    });
+
+    this.register('class', (element, value) => {
+      if (typeof value === 'string') {
+        element.className = value;
+      } else if (Array.isArray(value)) {
+        element.className = value.filter(Boolean).join(' ');
+      } else if (typeof value === 'object') {
+        Object.keys(value).forEach(className => {
+          element.classList.toggle(className, !!value[className]);
+        });
+      }
+    });
+
+    this.register('style', (element, value) => {
+      if (typeof value === 'string') {
+        element.style.cssText = value;
+      } else if (typeof value === 'object') {
+        Object.keys(value).forEach(prop => {
+          element.style[prop] = value[prop];
+        });
+      }
+    });
+
+    this.register('href', (element, value) => {
+      element.setAttribute('href', value ?? '');
+    });
+
+    this.register('src', (element, value) => {
+      element.setAttribute('src', value ?? '');
+    });
+
+    this.register('alt', (element, value) => {
+      element.setAttribute('alt', value ?? '');
+    });
+
+    this.register('title', (element, value) => {
+      element.setAttribute('title', value ?? '');
+    });
+
+    this.register('placeholder', (element, value) => {
+      element.setAttribute('placeholder', value ?? '');
+    });
+  }
+}
+
+BindingUpdaters.registerBuiltins();
+
+// ============================================================================
+// PART 7: BINDINGS
+// ============================================================================
+
+class Binding {
+  constructor(element, attributeBinding, contextStack) {
+    this.element = element;
+    this.binding = attributeBinding;
+    this.contextStack = contextStack;
+    this.effect = null;
+    this.cleanup = null;
+    this.active = true;
+
+    this.updater = BindingUpdaters.get(attributeBinding.name);
+
+    if (!this.updater) {
+      console.warn(`No updater found for binding: ${attributeBinding.name}`);
+      return;
+    }
+
+    this._createEffect();
+  }
+
+  _createEffect() {
+    this.effect = EffectTracker.create(() => {
+      if (!this.active) return;
+
+      try {
+        const value = this._evaluate();
+        this.updater(this.element, value, this.binding);
+      } catch (error) {
+        console.error(`Error in binding "${this.binding.name}":`, error);
+        console.error(`Expression: ${this.binding.expression}`);
+        console.error(`Element:`, this.element);
+      }
+    });
+  }
+
+  _evaluate() {
+    return ExpressionEvaluator.evaluate(this.binding.expression, this.contextStack);
+  }
+
+  destroy() {
+    this.active = false;
+    if (this.effect) {
+      this.effect.stop();
+      this.effect = null;
+    }
+    if (this.cleanup) {
+      this.cleanup();
+      this.cleanup = null;
+    }
+  }
+}
+
+class EventBinding {
+  constructor(element, attributeBinding, contextStack) {
+    this.element = element;
+    this.binding = attributeBinding;
+    this.contextStack = contextStack;
+    this.handler = null;
+    this._attach();
+  }
+
+  _attach() {
+    const eventName = this.binding.name;
+
+    this.handler = (event) => {
+      try {
+        const eventContext = {
+          $event: event,
+          $element: this.element,
+          $target: event.target
+        };
+
+        const context = [...this.contextStack, eventContext];
+
+        // DEBUG: Log what we're evaluating
+        console.log('Event fired:', eventName);
+        console.log('Expression:', this.binding.expression);
+        console.log('Context stack depth:', context.length);
+        console.log('Context[0] keys:', Object.keys(context[0] || {}));
+
+        ExpressionEvaluator.evaluate(this.binding.expression, context);
+
+      } catch (error) {
+        console.error(`Error in event handler "${eventName}":`, error);
+        console.error(`Expression: ${this.binding.expression}`);
+        console.error(`Context:`, this.contextStack);
+      }
+    };
+
+    this.element.addEventListener(eventName, this.handler);
+  }
+
+  destroy() {
+    if (this.handler) {
+      const eventName = this.binding.name;
+      this.element.removeEventListener(eventName, this.handler);
+      this.handler = null;
+    }
+  }
+}
+
+// ============================================================================
+// PART 8: LOOP BINDING
+// ============================================================================
+
+class LoopBinding {
+  constructor(loopConfig, model, contextStack) {
+    this.loopConfig = loopConfig;
+    this.model = model;
+    this.parentContext = contextStack;
+    this.instances = [];
+    this.effect = null;
+    this._createEffect();
+  }
+
+  _createEffect() {
+    this.effect = EffectTracker.create(() => {
+      const sourceArray = this._getSourceArray();
+
+      if (!Array.isArray(sourceArray)) {
+        console.warn(`Loop source is not an array: ${this.loopConfig.source}`);
+        return;
+      }
+
+      this._reconcile(sourceArray);
+    });
+  }
+
+  _getSourceArray() {
+    console.log('📍 _getSourceArray called');
+    console.log('   EffectTracker.current:', EffectTracker.current ? 'YES (inside effect)' : 'NO (outside effect)');
+
+    const expr = this.loopConfig.source;
+
+    console.log('   Evaluating expression:', expr);
+    const array = ExpressionEvaluator.evaluate(expr, this.parentContext);
+    console.log('   Got array, length:', array ? array.length : 'null');
+
+    if (array && typeof array.__version !== 'undefined') {
+      console.log('   Accessing array.__version');
+      array.__version;
+    }
+
+    return array;
+  }
+
+  _reconcile(newData) {
+    const oldByKey = this._buildKeyMap(this.instances);
+    const newByKey = this._buildDataKeyMap(newData);
+    const operations = this._planOperations(oldByKey, newByKey, newData);
+    this._applyOperations(operations);
+    this.instances = operations.finalInstances;
+  }
+
+  _buildKeyMap(instances) {
+    const map = new Map();
+    instances.forEach((instance, index) => {
+      const key = this._computeKey(instance.data, instance.context);
+      map.set(key, {instance, index});
+    });
+    return map;
+  }
+
+  _buildDataKeyMap(dataArray) {
+    const map = new Map();
+    dataArray.forEach((data, index) => {
+      const context = this._createItemContext(data, index);
+      const key = this._computeKey(data, context);
+      map.set(key, {data, index, context});
+    });
+    return map;
+  }
+
+  _computeKey(data, context) {
+    if (this.loopConfig.keyExpression === '$index') {
+      return context.$index;
+    }
+
+    try {
+      return ExpressionEvaluator.evaluate(this.loopConfig.keyExpression, [context]);
+    } catch (error) {
+      console.warn('Error computing key:', error);
+      return context.$index;
+    }
+  }
+
+  _createItemContext(data, index) {
+    const context = {
+      [this.loopConfig.itemVar]: data,
+      $index: index,
+      $parent: this.parentContext[this.parentContext.length - 1] || {}
+    };
+
+    if (this.loopConfig.indexVar) {
+      context[this.loopConfig.indexVar] = index;
+    }
+
+    return context;
+  }
+
+  _planOperations(oldByKey, newByKey, newData) {
+    const toRemove = [];
+    const toUpdate = [];
+    const toAdd = [];
+
+    oldByKey.forEach((oldItem, key) => {
+      if (newByKey.has(key)) {
+        const newItem = newByKey.get(key);
+        toUpdate.push({
+          key,
+          instance: oldItem.instance,
+          newData: newItem.data,
+          newIndex: newItem.index,
+          oldIndex: oldItem.index,
+          newContext: newItem.context
+        });
+      } else {
+        toRemove.push(oldItem.instance);
+      }
+    });
+
+    newByKey.forEach((newItem, key) => {
+      if (!oldByKey.has(key)) {
+        toAdd.push({
+          key,
+          data: newItem.data,
+          index: newItem.index,
+          context: newItem.context
+        });
+      }
+    });
+
+    const finalInstances = newData.map((data, index) => {
+      const context = this._createItemContext(data, index);
+      const key = this._computeKey(data, context);
+
+      if (oldByKey.has(key)) {
+        const instance = oldByKey.get(key).instance;
+        instance.data = data;
+        instance.context = context;
+        return instance;
+      }
+
+      return null;
+    });
+
+    return {toRemove, toUpdate, toAdd, finalInstances};
+  }
+
+  _applyOperations(operations) {
+    operations.toRemove.forEach(instance => {
+      instance.element.remove();
+      instance.cleanup();
+    });
+
+    operations.toUpdate.forEach(op => {
+      Object.assign(op.instance.context, op.newContext);
+    });
+
+    operations.toAdd.forEach(op => {
+      const instance = this._createInstance(op.data, op.context);
+
+      const targetIndex = op.index;
+      const anchor = this.loopConfig.anchor;
+
+      if (targetIndex === 0) {
+        anchor.parentNode.insertBefore(instance.element, anchor.nextSibling);
+      } else {
+        const previousInstance = operations.finalInstances[targetIndex - 1];
+        if (previousInstance && previousInstance.element) {
+          previousInstance.element.parentNode.insertBefore(
+            instance.element,
+            previousInstance.element.nextSibling
+          );
+        }
+      }
+
+      operations.finalInstances[op.index] = instance;
+    });
+
+    this._reorderDOM(operations.finalInstances);
+  }
+
+  _reorderDOM(instances) {
+    const anchor = this.loopConfig.anchor;
+    let currentNode = anchor.nextSibling;
+
+    instances.forEach(instance => {
+      if (!instance || !instance.element) return;
+
+      if (instance.element !== currentNode) {
+        anchor.parentNode.insertBefore(instance.element, currentNode);
+      }
+
+      currentNode = instance.element.nextSibling;
+    });
+  }
+
+  _createInstance(data, context) {
+    const element = this.loopConfig.template.cloneNode(true);
+    const parser = new ReactiveHTMLParser();
+    const parsed = parser.parse(element, [...this.parentContext, context]);
+    const bindings = this._createInstanceBindings(parsed, context);
+
+    const instance = {
+      element,
+      data,
+      context,
+      parsed,
+      bindings,
+      cleanup: () => {
+        bindings.forEach(binding => binding.destroy());
+      }
+    };
+
+    return instance;
+  }
+
+  _createInstanceBindings(parsedElement, itemContext) {
+    const bindings = [];
+    const contextStack = [...this.parentContext, itemContext];
+
+    parsedElement.bindings.forEach(attributeBinding => {
+      const binding = BindingFactory.create(parsedElement.element, attributeBinding, contextStack);
+      bindings.push(binding);
+      bindingRegistry.register(parsedElement.element, binding);
+    });
+
+    parsedElement.children.forEach(child => {
+      const childBindings = this._createInstanceBindings(child, itemContext);
+      bindings.push(...childBindings);
+    });
+
+    return bindings;
+  }
+
+  destroy() {
+    if (this.effect) {
+      this.effect.stop();
+      this.effect = null;
+    }
+
+    this.instances.forEach(instance => {
+      instance.cleanup();
+    });
+
+    this.instances = [];
+  }
+}
+
+// ============================================================================
+// PART 9: CONDITIONALS BINDING
+// ============================================================================
+
+/**
+ * ConditionalBinding - Manages :if/:else-if/:else branches
+ *
+ * Responsibilities:
+ * - Evaluate branch conditions in order
+ * - Show first truthy branch (or hide all)
+ * - Lazy parse branches (only when first shown)
+ * - Use comment anchor (preserve DOM position)
+ * - Clean up when element removed
+ *
+ * Key difference from loops:
+ * - Loops: many instances, all visible
+ * - Conditionals: one branch, conditionally visible
+ *
+ * Algorithm:
+ * 1. Evaluate conditions top to bottom
+ * 2. Stop at first true condition
+ * 3. Show that branch (parse if needed)
+ * 4. Hide current branch if different
+ * 5. If no conditions true, hide all
+ */
+class ConditionalBinding {
+  constructor(conditionalConfig, model, contextStack) {
+    this.conditionalConfig = conditionalConfig;
+    this.model = model;
+    this.contextStack = contextStack;
+    this.effect = null;
+
+    // Create effect to watch all conditions
+    this._createEffect();
+  }
+
+  /**
+   * Create an effect that evaluates conditions and shows appropriate branch
+   */
+  _createEffect() {
+    this.effect = EffectTracker.create(() => {
+      // Evaluate each branch condition in order
+      for (let i = 0; i < this.conditionalConfig.branches.length; i++) {
+        const branch = this.conditionalConfig.branches[i];
+
+        // Evaluate condition
+        const condition = this._evaluateCondition(branch.expression);
+
+        // If true, show this branch and stop
+        if (condition) {
+          this._showBranch(i);
+          return;
+        }
+      }
+
+      // No condition was true - hide all
+      this._hideAll();
+    });
+  }
+
+  /**
+   * Evaluate a branch condition
+   */
+  _evaluateCondition(expression) {
+    try {
+      return ExpressionEvaluator.evaluate(expression, this.contextStack);
+    } catch (error) {
+      console.warn(`Error evaluating condition: "${expression}"`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Show a specific branch
+   */
+  _showBranch(branchIndex) {
+    const config = this.conditionalConfig;
+
+    if (config.activeBranch === branchIndex) {
+      return;
+    }
+
+    // Clean up current branch
+    if (config.activeElement) {
+      config.activeElement.remove();
+
+      const oldBranch = config.branches[config.activeBranch];
+      if (oldBranch && oldBranch.bindings) {
+        oldBranch.bindings.forEach(binding => binding.destroy());
+        oldBranch.bindings = [];
+      }
+
+      config.activeElement = null;
+    }
+
+    const branch = config.branches[branchIndex];
+
+    // Clone from template fresh each time!
+    branch.element = branch.template.cloneNode(true);
+
+    // Parse and bind the fresh clone
+    this._parseBranch(branch);
+
+    // Insert into DOM
+    config.anchor.parentNode.insertBefore(
+      branch.element,
+      config.anchor.nextSibling
+    );
+
+    config.activeElement = branch.element;
+    config.activeBranch = branchIndex;
+  }
+
+  /**
+   * Hide all branches
+   */
+  _hideAll() {
+    const config = this.conditionalConfig;
+
+    if (config.activeElement) {
+      config.activeElement.remove();
+      config.activeElement = null;
+      config.activeBranch = null;
+    }
+  }
+
+  /**
+   * Parse a branch (lazy - only done once per branch)
+   */
+  _parseBranch(branch) {
+    // Clean up existing bindings if any
+    if (branch.bindings && branch.bindings.length > 0) {
+      branch.bindings.forEach(binding => binding.destroy());
+      branch.bindings = [];
+    }
+
+    // Re-parse the branch element
+    const parser = new ReactiveHTMLParser();
+    branch.parsed = parser.parse(branch.element, this.contextStack);
+
+    // Create fresh bindings
+    branch.bindings = [];
+    this._createBranchBindings(branch.parsed, branch.bindings);
+  }
+
+  /**
+   * Create bindings for a branch
+   */
+  _createBranchBindings(parsedElement, bindingsArray) {
+    // Handle loops within conditional branches
+    if (parsedElement.type === 'loop') {
+      const loopBinding = LoopBindingFactory.create(
+        parsedElement,
+        this.model,
+        this.contextStack
+      );
+      bindingsArray.push(loopBinding);
+      bindingRegistry.register(parsedElement.loopConfig.anchor, loopBinding);
+      return;
+    }
+
+    // Handle nested conditionals
+    if (parsedElement.type === 'conditional') {
+      const nestedConditional = ConditionalBindingFactory.create(
+        parsedElement,
+        this.model,
+        this.contextStack
+      );
+      bindingsArray.push(nestedConditional);
+      bindingRegistry.register(parsedElement.conditionalConfig.anchor, nestedConditional);
+      return;
+    }
+
+    // Create regular bindings
+    parsedElement.bindings.forEach(attributeBinding => {
+      const binding = BindingFactory.create(
+        parsedElement.element,
+        attributeBinding,
+        this.contextStack
+      );
+      bindingsArray.push(binding);
+      bindingRegistry.register(parsedElement.element, binding);
+    });
+
+    // Recurse into children
+    parsedElement.children.forEach(child => {
+      this._createBranchBindings(child, bindingsArray);
+    });
+  }
+
+  /**
+   * Clean up this conditional binding
+   */
+  destroy() {
+    if (this.effect) {
+      this.effect.stop();
+      this.effect = null;
+    }
+
+    // Clean up all parsed branches
+    this.conditionalConfig.branches.forEach(branch => {
+      if (branch.bindings) {
+        branch.bindings.forEach(binding => binding.destroy());
+      }
+    });
+
+    this._hideAll();
+  }
+}
+
+/**
+ * ConditionalBindingFactory - Creates ConditionalBinding from parsed metadata
+ */
+class ConditionalBindingFactory {
+  /**
+   * Create a conditional binding from parsed element
+   *
+   * @param {ParsedElement} parsedElement - Element with type='conditional'
+   * @param {Object} model - The reactive model
+   * @param {Array} contextStack - Parent context
+   * @returns {ConditionalBinding}
+   */
+  static create(parsedElement, model, contextStack) {
+    if (parsedElement.type !== 'conditional') {
+      throw new Error('Can only create conditional binding from conditional element');
+    }
+
+    return new ConditionalBinding(
+      parsedElement.conditionalConfig,
+      model,
+      contextStack
+    );
+  }
+}
+
+/**
+ * BatchScheduler - Batches DOM updates using requestAnimationFrame
+ *
+ * Design principles:
+ * - Multiple signal changes = one DOM update
+ * - Uses RAF for optimal rendering timing
+ * - Microtask queue for immediate updates when needed
+ * - Automatic deduplication (same effect doesn't run twice)
+ *
+ * Performance characteristics:
+ * - Before: N changes = N DOM updates
+ * - After: N changes = 1 DOM update (60fps)
+ */
+class BatchScheduler {
+  constructor() {
+    this.pendingEffects = new Set();
+    this.isScheduled = false;
+    this.isFlushing = false;
+  }
+
+  /**
+   * Schedule an effect to run in the next batch
+   * @param {Effect} effect - The effect to schedule
+   */
+  schedule(effect) {
+    // Add to pending queue
+    this.pendingEffects.add(effect);
+
+    // Schedule flush if not already scheduled
+    if (!this.isScheduled && !this.isFlushing) {
+      this.isScheduled = true;
+      requestAnimationFrame(() => this.flush());
+    }
+  }
+
+  /**
+   * Flush all pending effects
+   */
+  flush() {
+    if (this.isFlushing) return;
+
+    this.isFlushing = true;
+    this.isScheduled = false;
+
+    // Copy and clear pending effects
+    const effects = Array.from(this.pendingEffects);
+    this.pendingEffects.clear();
+
+    // Run all effects
+    effects.forEach(effect => {
+      if (effect.active) {
+        effect.run();
+      }
+    });
+
+    this.isFlushing = false;
+
+    // If new effects were scheduled during flush, schedule another flush
+    if (this.pendingEffects.size > 0 && !this.isScheduled) {
+      this.isScheduled = true;
+      requestAnimationFrame(() => this.flush());
+    }
+  }
+
+  /**
+   * Force immediate flush (for testing or critical updates)
+   */
+  flushSync() {
+    this.flush();
+  }
+}
+
+// Global scheduler instance
+const batchScheduler = new BatchScheduler();
+
+/**
+ * nextTick - Wait for next batch of DOM updates
+ *
+ * @param {Function} callback - Called after DOM updates
+ * @returns {Promise} - Resolves after DOM updates
+ *
+ * @example
+ * cart.items.push(newItem);
+ * await nextTick();
+ * console.log('DOM updated!', document.querySelector('.item:last-child'));
+ */
+function nextTick(callback) {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (callback) callback();
+        resolve();
+      });
+    });
+  });
+}
+
+/**
+ * batch - Execute multiple updates in a single batch
+ *
+ * @param {Function} fn - Function containing multiple updates
+ * @returns {*} - Return value of fn
+ *
+ * @example
+ * batch(() => {
+ *   cart.items.push(item1);
+ *   cart.items.push(item2);
+ *   cart.items.push(item3);
+ * });
+ * // Only one DOM update after all three pushes
+ */
+function batch(fn) {
+  // Execute function
+  const result = fn();
+
+  // Force immediate flush
+  batchScheduler.flushSync();
+
+  return result;
+}
+
+/**
+ * ComputedSignal - A cached, reactive computed value
+ *
+ * Design principles:
+ * - Lazy evaluation (only computes when accessed)
+ * - Automatic caching (reuses result until dependencies change)
+ * - Dependency tracking (knows what it depends on)
+ * - Works like a signal (can be tracked by effects)
+ *
+ * @example
+ * const total = computed(() => {
+ *   return cart.items.reduce((sum, item) => sum + item.price, 0);
+ * });
+ *
+ * console.log(total.value); // Computes: 15.50
+ * console.log(total.value); // Cached: 15.50 (no recomputation)
+ *
+ * cart.items.push({...}); // Dependencies changed
+ * console.log(total.value); // Recomputes: 20.00
+ */
+class ComputedSignal extends Signal {
+  constructor(getter, context = null) {
+    super(undefined);
+
+    this.getter = getter;
+    this.context = context; // For binding 'this'
+    this.effect = null;
+    this.dirty = true; // Needs recomputation
+
+    this._setupEffect();
+  }
+
+  /**
+   * Set up effect to track dependencies and mark dirty when they change
+   */
+  _setupEffect() {
+    this.effect = new Effect(() => {
+      // Evaluate getter to track dependencies
+      const newValue = this.context
+        ? this.getter.call(this.context)
+        : this.getter();
+
+      // Only update if value actually changed
+      if (this._value !== newValue) {
+        this._value = newValue;
+        this._notify(newValue, this._value);
+      }
+
+      // No longer dirty
+      this.dirty = false;
+    });
+
+    // Override effect's run to mark dirty instead of running immediately
+    const originalRun = this.effect.run.bind(this.effect);
+    this.effect.run = () => {
+      this.dirty = true;
+      // Don't compute yet - wait for someone to access .value
+    };
+  }
+
+  /**
+   * Get the computed value (lazy evaluation)
+   */
+  get value() {
+    // If dirty, recompute
+    if (this.dirty) {
+      this._recompute();
+    }
+
+    // Track this computed as a dependency (if inside an effect)
+    if (EffectTracker.current) {
+      EffectTracker.current.track(this);
+    }
+
+    return this._value;
+  }
+
+  /**
+   * Computed values are read-only
+   */
+  set value(newValue) {
+    console.warn('Cannot set value of computed property. Computed values are read-only.');
+  }
+
+  /**
+   * Force recomputation
+   */
+  _recompute() {
+    this.effect.run = this.effect.run.bind(this.effect);
+
+    // Run the getter to get new value
+    const newValue = this.context
+      ? this.getter.call(this.context)
+      : this.getter();
+
+    // Update if changed
+    if (this._value !== newValue) {
+      this._value = newValue;
+      this._notify(newValue, this._value);
+    }
+
+    this.dirty = false;
+  }
+
+  /**
+   * Dispose of this computed (stop tracking)
+   */
+  dispose() {
+    if (this.effect) {
+      this.effect.stop();
+      this.effect = null;
+    }
+    super.dispose();
+  }
+}
+
+/**
+ * asyncComputed - Computed value from async function
+ *
+ * @param {Function} getter - Async function
+ * @param {*} defaultValue - Value while loading
+ * @returns {Object} - { value, loading, error }
+ */
+function asyncComputed(getter, defaultValue = null) {
+  const state = reactive({
+    value: defaultValue,
+    loading: false,
+    error: null
+  });
+
+  const compute = async () => {
+    state.loading = true;
+    state.error = null;
+
+    try {
+      const result = await getter();
+      state.value = result;
+    } catch (err) {
+      state.error = err;
+    } finally {
+      state.loading = false;
+    }
+  };
+
+  // Initial computation
+  compute();
+
+  return state;
+}
+
+/**
+ * computed - Create a computed property
+ *
+ * @param {Function} getter - Function that computes the value
+ * @param {Object} context - Optional 'this' context for getter
+ * @returns {ComputedSignal} - Computed signal
+ *
+ * @example
+ * // Simple computed
+ * const doubled = computed(() => count.value * 2);
+ *
+ * // With context
+ * const total = computed(function() {
+ *   return this.items.reduce((s, i) => s + i.price, 0);
+ * }, cart);
+ *
+ * // Chained computed
+ * const tax = computed(() => total.value * 0.1);
+ * const grandTotal = computed(() => total.value + tax.value);
+ */
+function computed(getter, context = null) {
+  return new ComputedSignal(getter, context);
+}
+
+/**
+ * ModelBinding - Two-way data binding for form inputs
+ *
+ * Handles:
+ * - Text inputs (text, email, number, url, etc.)
+ * - Checkboxes (single boolean or array of values)
+ * - Radio buttons
+ * - Select dropdowns (single and multiple)
+ * - Textareas
+ *
+ * @example
+ * <input type="text" :model="username">
+ * <input type="checkbox" :model="agreedToTerms">
+ * <input type="checkbox" :model="selectedItems" value="item1">
+ * <input type="radio" :model="size" value="small">
+ * <select :model="country">...</select>
+ * <textarea :model="bio"></textarea>
+ */
+class ModelBinding {
+  constructor(element, attributeBinding, contextStack) {
+    this.element = element;
+    this.binding = attributeBinding;
+    this.contextStack = contextStack;
+    this.effect = null;
+    this.eventHandler = null;
+    this.active = true;
+
+    this.inputType = this._determineInputType();
+    this._setup();
+  }
+
+  /**
+   * Determine what type of input we're dealing with
+   */
+  _determineInputType() {
+    const tagName = this.element.tagName.toLowerCase();
+
+    if (tagName === 'input') {
+      const type = this.element.type.toLowerCase();
+
+      if (type === 'checkbox') {
+        // Check if this is array binding (has value attribute)
+        return this.element.hasAttribute('value') ? 'checkbox-array' : 'checkbox-boolean';
+      }
+
+      if (type === 'radio') {
+        return 'radio';
+      }
+
+      // text, email, number, url, tel, etc.
+      return 'input';
+    }
+
+    if (tagName === 'select') {
+      return this.element.hasAttribute('multiple') ? 'select-multiple' : 'select';
+    }
+
+    if (tagName === 'textarea') {
+      return 'textarea';
+    }
+
+    console.warn('Unknown input type for :model binding:', this.element);
+    return 'input'; // fallback
+  }
+
+  /**
+   * Setup bidirectional binding
+   */
+  _setup() {
+    // Model → View (reactive effect)
+    this._setupModelToView();
+
+    // View → Model (event listener)
+    this._setupViewToModel();
+  }
+
+  /**
+   * Model → View: Update input when model changes
+   */
+  _setupModelToView() {
+    this.effect = EffectTracker.create(() => {
+      if (!this.active) return;
+
+      try {
+        const value = this._evaluate();
+        this._updateView(value);
+      } catch (error) {
+        console.error('Error in model→view binding:', error);
+      }
+    });
+  }
+
+  /**
+   * View → Model: Update model when user interacts
+   */
+  _setupViewToModel() {
+    const eventName = this._getEventName();
+
+    this.eventHandler = (event) => {
+
+      try {
+        const newValue = this._getValueFromView();
+        this._updateModel(newValue);
+      } catch (error) {
+        console.error('Error in view→model binding:', error);
+      }
+    };
+
+    this.element.addEventListener(eventName, this.eventHandler);
+  }
+
+  /**
+   * Get appropriate event name for this input type
+   */
+  _getEventName() {
+    switch (this.inputType) {
+      case 'checkbox-boolean':
+      case 'checkbox-array':
+      case 'radio':
+      case 'select':
+      case 'select-multiple':
+        return 'change';
+
+      case 'input':
+      case 'textarea':
+      default:
+        return 'input';
+    }
+  }
+
+  /**
+   * Evaluate the binding expression to get model value
+   */
+  _evaluate() {
+    return ExpressionEvaluator.evaluate(this.binding.expression, this.contextStack);
+  }
+
+  /**
+   * Update the view (input) with model value
+   */
+  _updateView(modelValue) {
+    switch (this.inputType) {
+      case 'checkbox-boolean':
+        this.element.checked = !!modelValue;
+        break;
+
+      case 'checkbox-array':
+        const checkboxValue = this.element.value;
+        this.element.checked = Array.isArray(modelValue) && modelValue.includes(checkboxValue);
+        break;
+
+      case 'radio':
+        const radioValue = this.element.value;
+        this.element.checked = (modelValue == radioValue);
+        break;
+
+      case 'select-multiple':
+        if (Array.isArray(modelValue)) {
+          Array.from(this.element.options).forEach(option => {
+            option.selected = modelValue.includes(option.value);
+          });
+        }
+        break;
+
+      case 'select':
+      case 'input':
+      case 'textarea':
+      default:
+        if (this.element.value !== modelValue) {
+          this.element.value = modelValue ?? '';
+        }
+        break;
+    }
+  }
+
+  /**
+   * Get value from the view (input)
+   */
+  _getValueFromView() {
+    switch (this.inputType) {
+      case 'checkbox-boolean':
+        return this.element.checked;
+
+      case 'checkbox-array':
+        // This is handled in _updateModel
+        return null;
+
+      case 'radio':
+        return this.element.value;
+
+      case 'select-multiple':
+        return Array.from(this.element.selectedOptions).map(opt => opt.value);
+
+      case 'input':
+        // Handle number inputs
+        if (this.element.type === 'number') {
+          const num = parseFloat(this.element.value);
+          return isNaN(num) ? this.element.value : num;
+        }
+        return this.element.value;
+
+      case 'select':
+      case 'textarea':
+      default:
+        return this.element.value;
+    }
+  }
+
+  /**
+   * Update the model with view value
+   */
+  _updateModel(newValue) {
+    // Special handling for checkbox arrays
+    if (this.inputType === 'checkbox-array') {
+      const currentArray = this._evaluate();
+      const checkboxValue = this.element.value;
+
+      if (!Array.isArray(currentArray)) {
+        console.warn('Checkbox array binding expects an array in the model');
+        return;
+      }
+
+      if (this.element.checked) {
+        // Add to array if not present
+        if (!currentArray.includes(checkboxValue)) {
+          currentArray.push(checkboxValue);
+        }
+      } else {
+        // Remove from array
+        const index = currentArray.indexOf(checkboxValue);
+        if (index !== -1) {
+          currentArray.splice(index, 1);
+        }
+      }
+
+      return; // Array is already mutated (reactive)
+    }
+
+    // For all other types, set the value
+    // We need to evaluate the expression path and set it
+    this._setModelValue(newValue);
+  }
+
+  /**
+   * Set value in the model (handle nested paths)
+   */
+  _setModelValue(newValue) {
+    const expression = this.binding.expression;
+
+    // Simple case: direct property (e.g., "username")
+    if (/^\w+$/.test(expression)) {
+      // Find in context stack
+      for (let i = this.contextStack.length - 1; i >= 0; i--) {
+        const context = this.contextStack[i];
+        console.log('   Checking context', i, ':', Object.keys(context).slice(0, 5));
+
+        if (expression in context) {
+          context[expression] = newValue;
+          return;
+        }
+      }
+    }
+
+    // Complex case: nested property (e.g., "user.profile.name")
+    const match = expression.match(/^([\w.]+)$/);
+    if (match) {
+      const path = match[1].split('.');
+      const lastProp = path.pop();
+
+      // Navigate to parent object
+      let obj = null;
+      for (let i = this.contextStack.length - 1; i >= 0; i--) {
+        const context = this.contextStack[i];
+        if (path[0] in context) {
+          obj = context;
+          break;
+        }
+      }
+
+      if (obj) {
+        // Navigate nested path
+        for (const prop of path) {
+          obj = obj[prop];
+          if (!obj) break;
+        }
+
+        if (obj) {
+          console.log('   Setting', lastProp, '=', newValue, 'on', obj);
+          obj[lastProp] = newValue;
+        }
+      }
+    }
+  }
+
+  /**
+   * Clean up
+   */
+  destroy() {
+    this.active = false;
+
+    if (this.effect) {
+      this.effect.stop();
+      this.effect = null;
+    }
+
+    if (this.eventHandler) {
+      const eventName = this._getEventName();
+      this.element.removeEventListener(eventName, this.eventHandler);
+      this.eventHandler = null;
+    }
+  }
+}
+
+// ============================================================================
+// PART 9: FACTORIES & REGISTRY
+// ============================================================================
+
+class BindingFactory {
+  static create(element, attributeBinding, contextStack) {
+    // Check for :model binding
+    if (attributeBinding.name === 'model') {
+      return new ModelBinding(element, attributeBinding, contextStack);
+    }
+
+    // Event bindings
+    if (attributeBinding.type === 'event') {
+      return new EventBinding(element, attributeBinding, contextStack);
+    }
+
+    // Regular property bindings
+    return new Binding(element, attributeBinding, contextStack);
+  }
+}
+
+class LoopBindingFactory {
+  static create(parsedElement, model, contextStack) {
+    if (parsedElement.type !== 'loop') {
+      throw new Error('Can only create loop binding from loop element');
+    }
+
+    const enhancedContext = [...contextStack, model];
+    return new LoopBinding(parsedElement.loopConfig, model, enhancedContext);
+  }
+}
+
+class BindingRegistry {
+  constructor() {
+    this.elementBindings = new WeakMap();
+    this.allBindings = new Set();
+
+    this.observer = new MutationObserver(mutations => {
+      this._handleMutations(mutations);
+    });
+
+    this.observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
+  get count() {
+    return this.allBindings.size;
+  }
+
+  register(element, binding) {
+    let bindings = this.elementBindings.get(element);
+    if (!bindings) {
+      bindings = new Set();
+      this.elementBindings.set(element, bindings);
+    }
+    bindings.add(binding);
+    this.allBindings.add(binding);
+  }
+
+  unregister(binding) {
+    this.allBindings.delete(binding);
+  }
+
+  cleanup(element) {
+    const bindings = this.elementBindings.get(element);
+    if (bindings) {
+      bindings.forEach(binding => {
+        binding.destroy();
+        this.allBindings.delete(binding);
+      });
+    }
+  }
+
+  _handleMutations(mutations) {
+    mutations.forEach(mutation => {
+      mutation.removedNodes.forEach(node => {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          this.cleanup(node);
+          const descendants = node.querySelectorAll('*');
+          descendants.forEach(descendant => {
+            this.cleanup(descendant);
+          });
+        }
+      });
+    });
+  }
+
+  dispose() {
+    this.observer.disconnect();
+    this.allBindings.forEach(binding => binding.destroy());
+    this.allBindings.clear();
+  }
+}
+
+const bindingRegistry = new BindingRegistry();
+
+// ============================================================================
+// PART 10: INTEGRATION
+// ============================================================================
+
+/**
+ * createBindings - Enhanced to handle loops AND conditionals
+ */
+function createBindings(parsedElement, model, contextStack = []) {
+  const element = parsedElement.element;
+
+  // Only set context from data-model attribute, NOT from :model on inputs
+  if (element.hasAttribute('data-model')) {
+    const modelBinding = parsedElement.bindings.find(b => b.name === 'model');
+    if (modelBinding) {
+      const modelData = model[modelBinding.expression] || model;
+      contextStack = [modelData];
+    }
+  }
+
+  if (parsedElement.type === 'loop') {
+    const loopBinding = LoopBindingFactory.create(parsedElement, model, contextStack);
+    bindingRegistry.register(parsedElement.loopConfig.anchor, loopBinding);
+    return;
+  }
+
+  if (parsedElement.type === 'conditional') {
+    const conditionalBinding = ConditionalBindingFactory.create(parsedElement, model, contextStack);
+    bindingRegistry.register(parsedElement.conditionalConfig.anchor, conditionalBinding);
+    return;
+  }
+
+  parsedElement.bindings.forEach(attributeBinding => {
+    // Skip data-model binding (already processed above)
+    if (attributeBinding.name === 'model' && element.hasAttribute('data-model')) {
+      return;
+    }
+
+    const binding = BindingFactory.create(element, attributeBinding, contextStack);
+    bindingRegistry.register(element, binding);
+  });
+
+  parsedElement.children.forEach(child => {
+    createBindings(child, model, contextStack);
+  });
+}
+
+// ============================================================================
+// PART 11: EXPORTS & INITIALIZATION
+// ============================================================================
+
+export {
+  Signal,
+  Effect,
+  EffectTracker,
+  reactive,
+  ReactiveHTMLParser,
+  createBindings,
+  batch,
+  nextTick,
+  computed,
+  asyncComputed,
+  ComputedSignal,
+  batchScheduler,
+  ExpressionEvaluator,
+  ReactiveModel,
+  bindingRegistry,
+}
+
