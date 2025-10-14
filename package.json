@@ -1,5 +1,5 @@
 {
- "name": "reactive-html",
+ "name": "@m41na/reactive-html",
   "version": "1.0.0",
   "description": "Zero-dependency reactive framework that brings Vue-like reactivity directly to HTML",
   "main": "dist/reactive-html.js",
@@ -19,7 +19,7 @@
     "two-way-binding",
     "data-binding"
   ],
-  "author": "Your Name",
+  "author": "Maina, Stephen",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -28,7 +28,7 @@
   "bugs": {
     "url": "https://github.com/m41na/reactive-html/issues"
   },
-  "homepage": "https://github.com/m41na/reactive-html#readme",
+  "homepage": "https://github.com/m41na/reactive-html",
   "scripts": {
     "build": "webpack --mode=production --node-env=production",
     "build:dev": "webpack --mode=development",

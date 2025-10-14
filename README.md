@@ -25,7 +25,7 @@ No build step. No virtual DOM. No JSX. Just HTML with superpowers.
 </script>
 ```
 
-That's it. Type in the input, the text updates. Change the model, the input updates. Pure reactivity, zero magic. [Read more...](./MARKETING.md)
+That's it. Type in the input, the text updates. Change the model, the input updates. Pure reactivity, zero magic.
 
 ## Features
 
