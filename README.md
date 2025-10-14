@@ -50,7 +50,7 @@ That's it. Type in the input, the text updates. Change the model, the input upda
 ## Installation
 ### CDN
 ```html
-html<script src="https://unpkg.com/reactive-html@latest/dist/reactive-html.js"></script>
+<script src="https://unpkg.com/reactive-html@latest/dist/reactive-html.js"></script>
 ```
 ### NPM
 ```bash

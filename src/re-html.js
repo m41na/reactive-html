@@ -2390,6 +2390,32 @@ initializeErrorHandling(process.env.NODE_ENV === 'development');
 
 export {
   Signal,
+  Effect,
+  EffectTracker,
+  reactive,
+  ReactiveHTMLParser,
+  createBindings,
+  BindingRegistry,
+  bindingRegistry,
+  ExpressionEvaluator,
+  ReactiveModel,
+  computed,
+  batch,
+  nextTick,
+  batchScheduler,
+  ModelBinding,
+  ConditionalBinding,
+  ConditionalBindingFactory,
+  
+  // Add error handling
+  ErrorBoundary,
+  GlobalErrorHandler,
+  createElementErrorBoundary
+}
+
+if (typeof window !== 'undefined') {
+  window.ReactiveHTML = {
+    Signal,
     Effect,
     EffectTracker,
     reactive,
@@ -2411,7 +2437,8 @@ export {
     ErrorBoundary,
     GlobalErrorHandler,
     createElementErrorBoundary
+  };
+  
+  console.log('Reactive HTML Framework loaded!');
 }
-
-console.log('Reactive HTML Framework loaded!');
 
