@@ -1,0 +1,82 @@
+<template>
+  <div class="counter">
+    <h3 :text="title"></h3>
+    <div class="display">
+      <span :text="count"></span>
+    </div>
+    <div class="controls">
+      <button @click="decrement()">-</button>
+      <button @click="reset()">Reset</button>
+      <button @click="increment()">+</button>
+    </div>
+  </div>
+</template>
+
+<script>
+export default {
+  props: ['title', 'start'],
+  
+  data() {
+    return {
+      count: this.start || 0
+    };
+  },
+  
+  setup() {
+    console.log('[SETUP] Running for:', this.title);
+    
+    this.onMount(() => {
+      console.log('[MOUNT]', this.title, 'mounted with count:', this.count);
+      
+      return () => {
+        console.log('[UNMOUNT]', this.title, 'unmounted with count:', this.count);
+      };
+    });
+  },
+  
+  increment() {
+    this.count++;
+  },
+  
+  decrement() {
+    this.count--;
+  },
+  
+  reset() {
+    this.count = this.start || 0;
+  }
+}
+</script>
+
+<style scoped>
+  .counter {
+    padding: 20px;
+    border: 2px solid #007bff;
+    border-radius: 8px;
+    text-align: center;
+    display: inline-block;
+    margin: 10px;
+  }
+  
+  .display {
+    font-size: 48px;
+    font-weight: bold;
+    margin: 20px 0;
+    color: #007bff;
+  }
+  
+  button {
+    padding: 10px 20px;
+    margin: 5px;
+    font-size: 16px;
+    border: none;
+    background: #007bff;
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  
+  button:hover {
+    background: #0056b3;
+  }
+</style>

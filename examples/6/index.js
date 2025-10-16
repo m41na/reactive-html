@@ -3,7 +3,7 @@ import {
   ReactiveHTMLParser,
   createBindings,
   registerComponent
-} from './re-html.js';
+} from './lib/reactive-html';
 
 console.log('=== STARTING COMPONENT TEST ===');
   
@@ -11,7 +11,7 @@ console.log('=== STARTING COMPONENT TEST ===');
   try {
     // Register component
     console.log('1. Registering component...');
-    await registerComponent('counter-component', './component/Counter.html');
+    await registerComponent('counter-component', './Counter.html');
     console.log('   ✅ Component registered');
     
     // Create model

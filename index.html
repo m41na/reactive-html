@@ -2,37 +2,22 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Extend Onsen UI with ReactiveHTML</title>
-  <!-- <script src="reactive-html.js"></script> -->
-  <link rel="stylesheet" href="https://unpkg.com/onsenui/css/onsenui.css">
-  <link rel="stylesheet" href="https://unpkg.com/onsenui/css/onsen-css-components.min.css">
-  <script src="https://unpkg.com/onsenui/js/onsenui.min.js"></script>
-  <script src="./dist/reactive-html.js"></script>
+  <title>Component Test</title>
+  <!-- <script type="module" defer src="index.js"></script> -->
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+  </style>
 </head>
 <body>
-  <ons-splitter>
-    <!-- The side menu -->
-    <ons-splitter-side id="menu" collapse>
-      <ons-page>
-        <ons-list>
-          <ons-list-item onclick="loadPage('about.html')">
-            About
-          </ons-list-item>
-        </ons-list>
-      </ons-page>
-    </ons-splitter-side>
-  
-    <!-- Everything not in the side menu -->
-    <ons-splitter-content>
-      <ons-navigator id="navigator" page="login.html"></ons-navigator>
-    </ons-splitter-content>
-  </ons-splitter>
 
-  <script>
-    const loadPage = (page) => {
-  document.querySelector('#menu').close();
-  document.querySelector('#navigator').bringPageTop(page, { animation: 'fade' });
-};
-  </script>
+<h1>Component Test</h1>
+
+<div id="app" data-model="app">
+  <counter-component title="Counter A" :start="5"></counter-component>
+</div>
+
 </body>
 </html>
