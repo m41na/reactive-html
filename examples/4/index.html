@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Conditional Rendering Demo</title>
+  <!-- <script src="reactive-html.js"></script> -->
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    .status {
+      padding: 15px;
+      margin: 10px 0;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+    .empty { background: #f8d7da; color: #721c24; }
+    .few { background: #fff3cd; color: #856404; }
+    .many { background: #d4edda; color: #155724; }
+    .item {
+      padding: 10px;
+      border: 1px solid #ddd;
+      margin: 10px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    button {
+      padding: 8px 16px;
+      cursor: pointer;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      margin: 5px;
+    }
+    button:hover { background: #0056b3; }
+    .remove { background: #dc3545; }
+    .remove:hover { background: #c82333; }
+  </style>
+</head>
+<body>
+
+<re-shopping-cart data-model="cart">
+  <h2>Shopping Cart with Conditionals</h2>
+  
+  <!-- Conditional status message based on item count -->
+  <div :if="items.length === 0" class="status empty">
+    <p>🛒 Your cart is empty!</p>
+    <p>Add some items to get started.</p>
+  </div>
+  
+  <div :else-if="items.length < 3" class="status few">
+    <p>📦 You have a few items (<span :text="items.length"></span>)</p>
+    <p>Add more to reach free shipping at 3+ items!</p>
+  </div>
+  
+  <div :else class="status many">
+    <p>✅ Nice! You have <span :text="items.length"></span> items</p>
+    <p>🎉 You qualify for free shipping!</p>
+  </div>
+  
+  <!-- Loop through items (only shown if items exist) -->
+  <div :if="items.length > 0">
+    <h3>Your Items:</h3>
+    
+    <div :each="item in items" :key="item.id" class="item">
+      <div>
+        <strong :text="item.name"></strong>
+        <span> - $</span>
+        <span :text="item.price.toFixed(2)"></span>
+        
+        <!-- Conditional discount badge -->
+        <span :if="item.price > 5" style="color: red; font-weight: bold;"> 💰 Premium</span>
+      </div>
+      <button class="remove" @click="removeItem(item.id)">Remove</button>
+    </div>
+    
+    <!-- Total section (only when items exist) -->
+    <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 4px;">
+      <div><strong>Total Items:</strong> <span :text="items.length"></span></div>
+      <div><strong>Total Price:</strong> $<span :text="items.reduce((s,i) => s + i.price, 0).toFixed(2)"></span></div>
+      
+      <!-- Conditional free shipping message -->
+      <div :if="items.length >= 3" style="color: green; margin-top: 10px;">
+        ✓ Free shipping applied!
+      </div>
+    </div>
+  </div>
+  
+  <!-- Action buttons -->
+  <div>
+    <button @click="addRandomItem()">Add Random Item</button>
+    <button @click="addExpensiveItem()">Add Premium Item ($8)</button>
+    <button :if="items.length > 0" @click="clearCart()">Clear Cart</button>
+  </div>
+  
+  <!-- Debug info -->
+  <div style="margin-top: 30px; padding: 10px; background: #e9ecef; border-radius: 4px; font-family: monospace; font-size: 12px;">
+    <div>Active bindings: <span :text="'Loading...'"></span></div>
+    <div>Items in cart: <span :text="items.length"></span></div>
+  </div>
+</re-shopping-cart>
+
+</body>
+</html>

@@ -1,0 +1,109 @@
+<!-- Counter.html - Your first component! -->
+<template>
+  <div class="counter">
+    <h3 :text="title"></h3>
+    <div class="display">
+      <span :text="count"></span>
+    </div>
+    <div class="controls">
+      <button @click="decrement()">-</button>
+      <button @click="reset()">Reset</button>
+      <button @click="increment()">+</button>
+    </div>
+    <div class="stats">
+      <small>Clicked <span :text="totalClicks"></span> times</small>
+    </div>
+  </div>
+</template>
+
+<script>
+  export default {
+    props: ['title', 'start'],
+    
+    data() {
+      return {
+        count: this.start || 0,
+        totalClicks: 0
+      };
+    },
+    
+    setup() {
+      // Log on mount
+      this.onMount(() => {
+        console.log(`Counter "${this.title}" mounted with start value:`, this.start);
+        
+        // Cleanup on unmount
+        return () => {
+          console.log(`Counter "${this.title}" unmounted with final count:`, this.count);
+        };
+      });
+      
+      // Watch count changes
+      this.watch(
+        () => this.count,
+        (newCount, oldCount) => {
+          console.log(`Count changed from ${oldCount} to ${newCount}`);
+        }
+      );
+      
+      // Update document title
+      this.watchEffect(() => {
+        if (this.count > 10) {
+          document.title = `🔥 Counter: ${this.count}`;
+        }
+      });
+    },
+    
+    increment() {
+      this.count++;
+      this.totalClicks++;
+    },
+    
+    decrement() {
+      this.count--;
+      this.totalClicks++;
+    },
+    
+    reset() {
+      this.count = this.start || 0;
+    }
+  }
+</script>
+
+<style scoped>
+  .counter {
+    padding: 20px;
+    border: 2px solid #007bff;
+    border-radius: 8px;
+    text-align: center;
+    max-width: 300px;
+    margin: 10px;
+  }
+  
+  .display {
+    font-size: 48px;
+    font-weight: bold;
+    margin: 20px 0;
+    color: #007bff;
+  }
+  
+  .controls button {
+    padding: 10px 20px;
+    margin: 5px;
+    font-size: 18px;
+    border: none;
+    background: #007bff;
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  
+  .controls button:hover {
+    background: #0056b3;
+  }
+  
+  .stats {
+    margin-top: 15px;
+    color: #666;
+  }
+</style>

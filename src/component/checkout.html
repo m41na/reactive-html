@@ -1,0 +1,42 @@
+<ons-page id="checkout">
+
+  <style>
+    #grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      grid-auto-rows: 33vw;
+    }
+
+    #grid img {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+
+<script>
+    let savedItems = [];
+
+    const addToSavedItems = itemPath => {
+      console.log('saving item', itemPath)
+    // we save a list so we can pass it to the gallery
+    savedItems.push(itemPath);
+
+    // now add the new pokemon to the grid
+    const grid = document.querySelector('#grid');
+    const cell = document.createElement('div');
+    cell.onclick = () => document.querySelector('#navigator')
+      .bringPageTop('gallery.html', { data: { itemPath, savedItems } });
+
+    const image = document.createElement('img');
+    image.setAttribute('src', `img/${itemPath}.jpg`);
+
+    cell.appendChild(image);
+    grid.appendChild(cell);
+  };
+  </script>
+  
+    <div id="content">
+      <div id="grid"></div>
+    </div>
+  
+  </ons-page>

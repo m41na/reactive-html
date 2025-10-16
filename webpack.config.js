@@ -17,10 +17,22 @@ const config = {
     output: {
         path: path.resolve(__dirname, 'dist'),
         filename: 'reactive-html.js',
+        clean: true,
     },
     devServer: {
         open: true,
         host: 'localhost',
+        static: [
+            {
+                directory: path.join(__dirname, 'src/component')
+            },
+            {
+                directory: path.join(__dirname, 'static')
+            },
+            {
+                directory: path.join(__dirname, 'dist')
+            }
+        ],
     },
     plugins: [
         new HtmlWebpackPlugin({

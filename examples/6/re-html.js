@@ -246,18 +246,23 @@ class Effect {
   }
 
   track(signal) {
+    console.log('[Effect.track] Tracking signal ID:', signal._id);
+    
     if (!this.dependencies.has(signal)) {
+      console.log('[Effect.track] New dependency, subscribing');
       this.dependencies.add(signal);
-
+      
       const unsubscribe = signal.subscribe(() => {
         if (this.active && !this.scheduled) {
-          // Instead of running immediately, schedule via batch scheduler
+          console.log('[Effect] Signal changed, scheduling re-run');
           this.scheduled = true;
           batchScheduler.schedule(this);
         }
       });
-
+      
       this.cleanups.push(unsubscribe);
+    } else {
+      console.log('[Effect.track] Already tracking this signal');
     }
   }
 
@@ -450,7 +455,13 @@ function reactive(target) {
       if (property === '__isReactive') return true;
       if (property === '__raw') return target;
       if (property === '__signals') return signals;
-
+    
+      // ADD DEBUGGING
+      if (property === 'count') {
+        console.log('[Reactive.get] Accessing count property');
+        console.log('[Reactive.get] EffectTracker.current:', EffectTracker.current ? 'YES' : 'NO');
+      }
+    
       // Check if this is a getter (computed property)
       const descriptor = Object.getOwnPropertyDescriptor(target, property);
       if (descriptor && descriptor.get) {
@@ -462,36 +473,65 @@ function reactive(target) {
         }
         return computedSignal.value;
       }
-
+    
       const value = Reflect.get(target, property, receiver);
-
+    
       // Create or get signal for property tracking
       let signal = signals.get(property);
       if (!signal) {
         signal = new Signal(value);
         signals.set(property, signal);
+        
+        // ADD DEBUGGING
+        if (property === 'count') {
+          console.log('[Reactive.get] Created NEW signal for count, ID:', signal._id);
+        }
+      } else {
+        // ADD DEBUGGING
+        if (property === 'count') {
+          console.log('[Reactive.get] Found EXISTING signal for count, ID:', signal._id);
+        }
       }
-
+    
       signal.value; // Trigger tracking
-
+      
+      // ADD DEBUGGING
+      if (property === 'count') {
+        console.log('[Reactive.get] After accessing signal.value');
+      }
+    
       if (typeof value === 'object' && value !== null) {
         return reactive(value);
       }
-
+    
       return value;
     },
 
     set(target, property, value, receiver) {
-      const oldValue = target[property];
-      const result = Reflect.set(target, property, value, receiver);
+      if (property === 'count') {
+        console.log('[Reactive.set] Setting count property to:', value);
+        console.log('[Reactive.set] Old value:', target[property]);
+      }
 
-      if (oldValue !== value) {
+      const oldValue = target[property];
+
+      // Make the new value reactive if it's an object/array
+      const reactiveValue = (typeof value === 'object' && value !== null) 
+        ? reactive(value) 
+        : value;
+
+      const result = Reflect.set(target, property, reactiveValue, receiver);
+  
+      if (oldValue !== reactiveValue) {
         let signal = signals.get(property);
         if (!signal) {
-          signal = new Signal(value);
+          signal = new Signal(reactiveValue);
           signals.set(property, signal);
         } else {
-          signal.value = value;
+          if (property === 'count') {
+            console.log('[Reactive.set] Updating signal ID:', signal._id);
+          }
+          signal.value = reactiveValue;
         }
       }
 
@@ -1057,21 +1097,31 @@ class Binding {
   }
 
   _createEffect() {
+    console.log('[Binding._createEffect] Creating for:', this.binding.name, 'expression:', this.binding.expression);
+    console.log('[Binding._createEffect] Element:', this.element.tagName);
+    
     this.effect = EffectTracker.create(() => {
       if (!this.active) return;
-
+  
       const safeUpdate = GlobalErrorHandler.wrap(() => {
         const value = this._evaluate();
+        
+        console.log('[Binding.effect] Running for:', this.binding.name, 'value:', value);
+        
         this.updater(this.element, value, this.binding);
+        
+        console.log('[Binding.effect] Updated DOM');
       }, {
         type: 'binding',
         bindingName: this.binding.name,
         element: this.element,
         expression: this.binding.expression
       });
-
+  
       safeUpdate();
     });
+    
+    console.log('[Binding._createEffect] Effect created');
   }
 
   _evaluate() {
@@ -1111,7 +1161,8 @@ class EventBinding {
     this.handler = (event) => {
       console.log('[EventBinding] Event fired:', eventName);
       console.log('[EventBinding] Expression:', this.binding.expression);
-      console.log('[EventBinding] Context:', this.contextStack);
+      console.log('[EventBinding] Context stack length:', this.contextStack.length);
+      console.log('[EventBinding] Context[0]:', this.contextStack[0]);
       
       const eventContext = {
         $event: event,
@@ -1123,7 +1174,9 @@ class EventBinding {
       
       // Wrap in error boundary
       const safeHandler = GlobalErrorHandler.wrap(() => {
-        ExpressionEvaluator.evaluate(this.binding.expression, context);
+        console.log('[EventBinding] About to evaluate expression');
+        const result = ExpressionEvaluator.evaluate(this.binding.expression, context);
+        console.log('[EventBinding] Evaluation result:', result);
       }, {
         type: 'event',
         eventName,
@@ -2639,6 +2692,12 @@ function initializeErrorHandling(isDevelopment = false) {
   }
 }
 
+// mock window
+window.process = {
+  env: {
+    NODE_ENV: 'development'
+  }
+}
 // Initialize
 initializeErrorHandling(process.env.NODE_ENV === 'development');
 
@@ -3076,6 +3135,14 @@ class ComponentBinding {
       
       // Make reactive
       this.instance = reactive(componentData);
+
+      // NOW bind methods to the REACTIVE proxy
+      Object.keys(component.definition).forEach(key => {
+        const value = component.definition[key];
+        if (typeof value === 'function' && key !== 'data' && key !== 'setup') {
+          this.instance[key] = value.bind(this.instance);  // ← Bind to reactive proxy!
+        }
+      });
       
       // Clone template
       const templateClone = component.template.cloneNode(true);

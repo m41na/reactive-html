@@ -1,0 +1,35 @@
+<!-- index.html - Use your component! -->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Component Demo</title>
+  <!-- <script src="reactive-html.js"></script> -->
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+    .container {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+  </style>
+</head>
+<body>
+
+<div data-model="app">
+  <h1>ReactiveHTML Components Demo</h1>
+  
+  <div class="container">
+    <counter-component title="Counter A" :start="0"></counter-component>
+    <counter-component title="Counter B" :start="10"></counter-component>
+    <counter-component title="Counter C" :start="100"></counter-component>
+  </div>
+  
+  <button @click="addCounter()">Add Counter</button>
+</div>
+
+</body>
+</html>

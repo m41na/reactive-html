@@ -1,0 +1,125 @@
+<ons-page id="products">
+
+    <script>
+      document.addEventListener('prechange', ({ target, tabItem }) => {
+        if (target.matches('#tabbar')) {
+          document.querySelector('#home-toolbar .center').innerHTML = tabItem.getAttribute('label');
+        }
+      });
+
+      async function init() {
+        const products = await import('./data/products.json', { with: { type: "json" } }).then(r => r.default);
+        console.log("products", products)
+        
+        const model = ReactiveHTML.reactive({
+          app: {
+            products,
+            addToCart: (name, button) => {
+              addToSavedItems(name);
+              button.parentNode.parentNode.hideExpansion();
+            }
+          }
+        });
+
+        const parser = new ReactiveHTML.ReactiveHTMLParser();
+        const root = document.querySelector('[data-model]');
+        const parsed = parser.parse(root);
+        ReactiveHTML.createBindings(parsed, model);
+      }
+      init()
+    </script>
+  
+    <ons-list id="products-list" data-model="app">
+      <ons-list-item expandable :each="item in products" :key="item.name">
+        <span :text="item.title"></span>
+        <div class="expandable-content">
+          <ons-button @click="addToCart(item.name, this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+    
+      <ons-list-item expandable>
+        blueberries
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('blueberries', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+    
+      <ons-list-item expandable>
+        cheese
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('cheese', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+    
+      <ons-list-item expandable>
+        collard greens
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('collard-greens', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        garlic
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('garlic', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        green bell peppers
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('green-bell-peppers', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        limes
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('limes', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        plums
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('plums', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        red apples
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('red-apples', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        red bell peppers
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('red-bell-peppers', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        round tomatoes
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('round-tomatoes', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        savoy
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('savoy', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+
+      <ons-list-item expandable>
+        white potatoes
+        <div class="expandable-content">
+          <ons-button onclick="addToCart('white-potatoes', this)">Save</ons-button>
+        </div>
+      </ons-list-item>
+    </ons-list>
+  
+  </ons-page>
